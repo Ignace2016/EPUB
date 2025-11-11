@@ -10,7 +10,7 @@ export const load: PageServerLoad = async ({ url }) => {
 		throw error(400, 'Missing `book` query parameter');
 	}
 
-	const library = await getLibrary();
+    const library = await getLibrary({ force: true });
 	const book = findBookBySlug(library, slug);
 
 	if (!book) {

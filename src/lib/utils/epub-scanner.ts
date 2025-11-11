@@ -7,7 +7,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 const LIBRARY_ROOT_NAME = 'Books';
 const LIBRARY_ROOT = path.resolve(LIBRARY_ROOT_NAME);
-const PUBLIC_PREFIX = '/EPUB';
+const PUBLIC_PREFIX = '/epub';
 const ROOT_PREFIX_REGEX = new RegExp(`^${LIBRARY_ROOT_NAME}/`);
 const CACHE_WINDOW_MS = 60 * 1000;
 
@@ -244,59 +244,69 @@ async function extractCover(
 }
 
 async function buildToc(
-	zip: JSZip,
-	pkg: any,
-	manifestItems: any[],
-	rootfile: string
+    zip: JSZip,
+    pkg: any,
+    manifestItems: any[],
+    rootfile: string
 ): Promise<TocNode[] | undefined> {
-	const opfDir = path.posix.dirname(rootfile);
+    const opfDir = path.posix.dirname(rootfile);
 
-	const navItem = manifestItems.find((item) =>
-		String(item.properties ?? '')
-			.split(/\s+/)
-			.includes('nav')
-	);
+    const navItem = manifestItems.find((item) =>
+        String(item.properties ?? '')
+            .split(/\s+/)
+            .includes('nav')
+    );
 
-	if (navItem?.href) {
-		const navPath = path.posix.join(opfDir === '.' ? '' : opfDir, navItem.href);
-		return parseNavDocument(zip, navPath);
-	}
+    if (navItem?.href) {
+        const navPath = path.posix.join(opfDir === '.' ? '' : opfDir, navItem.href);
+        return parseNavDocument(zip, navPath, opfDir);
+    }
 
-	const tocId = pkg?.spine?.toc;
-	if (!tocId) return undefined;
-	const ncxItem = manifestItems.find((item) => item.id === tocId);
-	if (!ncxItem?.href) return undefined;
+    const tocId = pkg?.spine?.toc;
+    if (!tocId) return undefined;
+    const ncxItem = manifestItems.find((item) => item.id === tocId);
+    if (!ncxItem?.href) return undefined;
 
-	const ncxPath = path.posix.join(opfDir === '.' ? '' : opfDir, ncxItem.href);
-	return parseNcx(zip, ncxPath);
+    const ncxPath = path.posix.join(opfDir === '.' ? '' : opfDir, ncxItem.href);
+    return parseNcx(zip, ncxPath, opfDir);
 }
 
-async function parseNavDocument(zip: JSZip, navPath: string): Promise<TocNode[] | undefined> {
-	const navFile = zip.file(navPath);
-	if (!navFile) return undefined;
+async function parseNavDocument(
+    zip: JSZip,
+    navPath: string,
+    opfDir: string
+): Promise<TocNode[] | undefined> {
+    const navFile = zip.file(navPath);
+    if (!navFile) return undefined;
 
-	const navText = await navFile.async('text');
-	const navDoc = xmlParser.parse(navText);
+    const navText = await navFile.async('text');
+    const navDoc = xmlParser.parse(navText);
 
-	const navNode = findFirstNav(navDoc);
-	if (!navNode) return undefined;
+    const navNode = findFirstNav(navDoc);
+    if (!navNode) return undefined;
 
-	const orderedList = navNode.ol ?? navNode.div?.ol;
-	if (!orderedList) return undefined;
+    const orderedList = navNode.ol ?? navNode.div?.ol;
+    if (!orderedList) return undefined;
 
-	return normalizeList(orderedList);
+    const baseDir = path.posix.dirname(navPath);
+    return normalizeList(orderedList, baseDir, opfDir);
 }
 
-async function parseNcx(zip: JSZip, ncxPath: string): Promise<TocNode[] | undefined> {
-	const ncxFile = zip.file(ncxPath);
-	if (!ncxFile) return undefined;
+async function parseNcx(
+    zip: JSZip,
+    ncxPath: string,
+    opfDir: string
+): Promise<TocNode[] | undefined> {
+    const ncxFile = zip.file(ncxPath);
+    if (!ncxFile) return undefined;
 
-	const ncxText = await ncxFile.async('text');
-	const ncxDoc = xmlParser.parse(ncxText);
-	const navMap = ncxDoc?.ncx?.navMap;
-	if (!navMap) return undefined;
+    const ncxText = await ncxFile.async('text');
+    const ncxDoc = xmlParser.parse(ncxText);
+    const navMap = ncxDoc?.ncx?.navMap;
+    if (!navMap) return undefined;
 
-	return normalizeNavPoints(toArray(navMap.navPoint));
+    const baseDir = path.posix.dirname(ncxPath);
+    return normalizeNavPoints(toArray(navMap.navPoint), baseDir, opfDir);
 }
 
 function findFirstNav(node: any): any | undefined {
@@ -313,42 +323,55 @@ function findFirstNav(node: any): any | undefined {
 	return undefined;
 }
 
-function normalizeList(listNode: any): TocNode[] {
-	const listItems = toArray(listNode?.li);
+function normalizeList(listNode: any, baseDir: string, opfDir: string): TocNode[] {
+    const listItems = toArray(listNode?.li);
 
-	return listItems
-		.map((item) => {
-			const link =
-				item.a ??
-				(Array.isArray(item.p) ? item.p[0]?.a : item.p?.a) ??
-				item.span?.a ??
-				item.div?.a;
+    return listItems
+        .map((item) => {
+            const link =
+                item.a ??
+                (Array.isArray(item.p) ? item.p[0]?.a : item.p?.a) ??
+                item.span?.a ??
+                item.div?.a;
 
-			const title = pickText(link?.text ?? link?.span?.text ?? item.span?.text ?? item.text);
-			if (!title) return undefined;
+            const title = pickText(link?.text ?? link?.span?.text ?? item.span?.text ?? item.text);
+            if (!title) return undefined;
 
-			const href = link?.href;
-			const children = item.ol ? normalizeList(item.ol) : undefined;
+            const hrefRaw = link?.href as string | undefined;
+            const href = hrefRaw ? normalizeContentHref(baseDir, opfDir, hrefRaw) : undefined;
+            const children = item.ol ? normalizeList(item.ol, baseDir, opfDir) : undefined;
 
-			return {
-				title,
-				href,
-				children
-			} as TocNode;
-		})
-		.filter(Boolean) as TocNode[];
+            return {
+                title,
+                href,
+                children
+            } as TocNode;
+        })
+        .filter(Boolean) as TocNode[];
 }
 
-function normalizeNavPoints(points: any[]): TocNode[] {
-	return points
-		.map((point) => {
-			const title = pickText(point?.navLabel?.text ?? point?.navLabel);
-			const href = point?.content?.src;
-			const children = point?.navPoint ? normalizeNavPoints(toArray(point.navPoint)) : undefined;
-			if (!title) return undefined;
-			return { title, href, children };
-		})
-		.filter(Boolean) as TocNode[];
+function normalizeNavPoints(points: any[], baseDir: string, opfDir: string): TocNode[] {
+    return points
+        .map((point) => {
+            const title = pickText(point?.navLabel?.text ?? point?.navLabel);
+            const hrefRaw = point?.content?.src as string | undefined;
+            const href = hrefRaw ? normalizeContentHref(baseDir, opfDir, hrefRaw) : undefined;
+            const children = point?.navPoint ? normalizeNavPoints(toArray(point.navPoint), baseDir, opfDir) : undefined;
+            if (!title) return undefined;
+            return { title, href, children };
+        })
+        .filter(Boolean) as TocNode[];
+}
+
+function normalizeContentHref(baseDir: string, opfDir: string, href: string): string {
+    // Strip fragment for rendition.display; epub.js can handle fragments but we don't need them for list
+    const [link, fragment] = href.split('#');
+    const joined = path.posix.normalize(path.posix.join(baseDir === '.' ? '' : baseDir, link));
+    // Render hrefs relative to opfDir to match manifest entries
+    const rel = path.posix.relative(opfDir === '.' ? '' : opfDir, joined);
+    // Avoid any leading ../ which would be outside OPF dir
+    const cleaned = rel.replace(/^\.+\//, '');
+    return cleaned + (fragment ? `#${fragment}` : '');
 }
 
 function toArray<T>(value: T | T[] | undefined): T[] {

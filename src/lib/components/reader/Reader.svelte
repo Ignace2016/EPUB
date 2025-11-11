@@ -27,7 +27,16 @@
 	let magazineLayoutEnabled = $state(isMagazineTitle);
 	const magazineModeActive = $derived(isMagazineTitle && magazineLayoutEnabled);
 	const themeKey = $derived(getThemeKey(appearanceModeId, magazineModeActive));
-const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
+
+	function encodePathSegments(urlPath: string): string {
+		// Encode each segment but preserve slashes. Keeps spaces, brackets, commas safe.
+		return urlPath
+			.split('/')
+			.map((seg, i) => (i === 0 && seg === '' ? '' : encodeURIComponent(seg)))
+			.join('/');
+	}
+
+	const bookUrl = $derived(encodePathSegments(book.metadata.fileUrl));
 	const title = $derived(book.metadata.title);
 	const author = $derived(book.metadata.author);
 	const folderTrail = $derived(book.metadata.folderTrail.join(' / ') || 'Books');
@@ -67,6 +76,7 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 		try {
 			const module = await import('epubjs');
 			const ePub = module.default;
+			// First try opening by URL (fast path)
 			bookInstance = ePub(bookUrl);
 			rendition = bookInstance.renderTo(viewerEl, {
 				width: '100%',
@@ -74,16 +84,78 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 				flow: 'paginated',
 				allowScriptedContent: true
 			});
+			attachRenditionListeners();
+			registerThemes();
+			selectRenditionTheme(themeKey);
 
+			// Try a sequence of reasonable display targets, falling back to default start
+			const candidates: Array<string | null | undefined> = [
+				currentHref,
+				navigableChapters[0]?.href,
+				undefined
+			];
+
+			let displayed = false;
+			for (const target of candidates) {
+				try {
+					await rendition.display(normalizeTargetHref(target));
+					displayed = true;
+					break;
+				} catch (e) {
+					// continue to next candidate
+				}
+			}
+
+			if (!displayed) {
+				throw new Error('No Section Found');
+			}
+
+			status = 'ready';
+		} catch (firstErr) {
+			console.warn('URL-based open failed, retrying with ArrayBuffer', firstErr);
+			try {
+				const module = await import('epubjs');
+				const ePub = module.default;
+				const resp = await fetch(bookUrl);
+				if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${bookUrl}`);
+				const buf = await resp.arrayBuffer();
+				bookInstance = ePub(buf);
+				rendition = bookInstance.renderTo(viewerEl, {
+					width: '100%',
+					height: '100%',
+					flow: 'paginated',
+					allowScriptedContent: true
+				});
 				attachRenditionListeners();
 				registerThemes();
 				selectRenditionTheme(themeKey);
-			await rendition.display(currentHref ?? navigableChapters[0]?.href ?? undefined);
-			status = 'ready';
-		} catch (err) {
-			console.error(err);
-			status = 'error';
-			errorMessage = err instanceof Error ? err.message : 'Failed to open EPUB';
+
+				const candidates: Array<string | null | undefined> = [
+					currentHref,
+					navigableChapters[0]?.href,
+					undefined
+				];
+				let displayed = false;
+				for (const target of candidates) {
+					try {
+						await rendition.display(normalizeTargetHref(target));
+						displayed = true;
+						break;
+					} catch (e) {}
+				}
+				if (!displayed) {
+					throw new Error('No Section Found');
+				}
+
+				status = 'ready';
+			} catch (secondErr) {
+				console.error('Both URL and ArrayBuffer open failed', secondErr);
+				status = 'error';
+				errorMessage =
+					secondErr instanceof Error
+						? `${secondErr.message}`
+						: 'Failed to open EPUB';
+			}
 		}
 	}
 
@@ -114,7 +186,7 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 		isNavigating = true;
 		try {
 			currentHref = href;
-			await rendition.display(href);
+    			await rendition.display(normalizeTargetHref(href));
 		} catch (err) {
 			console.error('Failed to navigate to href', href, err);
 		} finally {
@@ -147,18 +219,18 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 		await displayHref(navigableChapters[targetIndex]?.href);
 	}
 
-	function handleKeydown(event: KeyboardEvent) {
+function handleKeydown(event: KeyboardEvent) {
 		if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
 			return;
 		}
 
-		if (event.key === 'ArrowRight' || event.key === 'PageDown') {
-			event.preventDefault();
-			void goNextChapter();
-		} else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
-			event.preventDefault();
-			void goPreviousChapter();
-		}
+    if (event.key === 'ArrowRight' || event.key === 'PageDown') {
+            event.preventDefault();
+            void rendition?.next();
+        } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+            event.preventDefault();
+            void rendition?.prev();
+        }
 	}
 
 	function handleTouchStart(event: TouchEvent) {
@@ -170,13 +242,13 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 		const endX = event.changedTouches[0]?.clientX ?? null;
 		if (endX === null) return;
 		const delta = endX - touchStartX;
-		if (Math.abs(delta) > 60) {
-			if (delta < 0) {
-				void goNextChapter();
-			} else {
-				void goPreviousChapter();
-			}
-		}
+    if (Math.abs(delta) > 60) {
+            if (delta < 0) {
+                void rendition?.next();
+            } else {
+                void rendition?.prev();
+            }
+        }
 		touchStartX = null;
 	}
 
@@ -191,6 +263,19 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 		if (!browser) return;
 		window.addEventListener('keydown', handleKeydown);
 		return () => window.removeEventListener('keydown', handleKeydown);
+	});
+
+	// Keep pagination metrics correct when the window resizes
+	$effect(() => {
+		if (!browser) return;
+		const onResize = () => {
+			try {
+				// Let epub.js recompute pages based on current container size
+				rendition?.resize();
+			} catch {}
+		};
+		window.addEventListener('resize', onResize);
+		return () => window.removeEventListener('resize', onResize);
 	});
 
 		$effect(() => {
@@ -227,10 +312,17 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 		return items.findIndex((item) => normalizeHref(item.href) === normalized);
 	}
 
-	function normalizeHref(href?: string | null) {
-		if (!href) return null;
-		return href.split('#')[0];
-	}
+function normalizeHref(href?: string | null) {
+    if (!href) return null;
+    return href.split('#')[0];
+}
+
+function normalizeTargetHref(target?: string | null): string | undefined {
+    if (!target) return undefined;
+    const noFrag = target.split('#')[0] ?? target;
+    // Remove any leading slash so epub.js resolves against book base
+    return noFrag.replace(/^\/+/, '');
+}
 
 	function registerThemes() {
 		if (!rendition) return;
@@ -263,12 +355,8 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 			padding: magazine ? '2rem 3rem' : '1.5rem'
 		};
 
-		if (magazine) {
-			body['column-width'] = '340px';
-			body['column-gap'] = '2.5rem';
-			body['column-fill'] = 'balance';
-			body['column-rule'] = `1px solid ${mode.reader.link}`;
-		}
+		// Note: Avoid setting CSS columns inside the EPUB document here.
+		// epub.js handles pagination/columns; adding CSS columns can hide content.
 
 		const styles: Record<string, Record<string, string>> = {
 			body,
@@ -339,8 +427,8 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 
 	<Controls
 		{chapterLabel}
-		onPrev={() => goPreviousChapter()}
-		onNext={() => goNextChapter()}
+		onPrev={() => { void rendition?.prev(); }}
+		onNext={() => { void rendition?.next(); }}
 		{isPrevDisabled}
 		{isNextDisabled}
 		{isNavigating}
@@ -348,7 +436,7 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 
 		<div class="grid gap-5 lg:grid-cols-[minmax(0,1fr),320px]">
 		<div
-			class="reader-panel relative min-h-[70vh] overflow-hidden rounded-3xl border shadow-xl"
+			class="reader-panel relative min-h-[80vh] overflow-hidden rounded-3xl border shadow-xl"
 			ontouchstart={handleTouchStart}
 			ontouchend={handleTouchEnd}
 		>
