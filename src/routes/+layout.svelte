@@ -53,7 +53,7 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>Astra · Premium EPUB Library</title>
+	<title>EPUB Reader</title>
 </svelte:head>
 
 <div class="theme-shell antialiased" style={themeVars} data-theme={appearanceModeId}>
