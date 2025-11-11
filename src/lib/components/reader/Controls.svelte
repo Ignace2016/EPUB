@@ -22,7 +22,7 @@
 		<p class="text-base font-semibold">{chapterLabel}</p>
 	</div>
 
-	<div class="flex flex-wrap items-center gap-3">
+	<div class="ml-auto flex flex-wrap items-center gap-3">
 		<button
 			class="reader-nav inline-flex items-center gap-2 text-sm"
 			onclick={onPrev}
@@ -45,10 +45,5 @@
 				<path d="M8 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
 		</button>
-	</div>
-
-	<div class="reader-muted hidden flex-col text-xs uppercase tracking-[0.35em] md:flex">
-		<span>Keyboard · ← → · PgUp PgDn</span>
-		<span>Touch · swipe edges</span>
 	</div>
 </div>

@@ -27,7 +27,7 @@
 	let magazineLayoutEnabled = $state(isMagazineTitle);
 	const magazineModeActive = $derived(isMagazineTitle && magazineLayoutEnabled);
 	const themeKey = $derived(getThemeKey(appearanceModeId, magazineModeActive));
-	const bookUrl = $derived(book.metadata.fileUrl);
+const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 	const title = $derived(book.metadata.title);
 	const author = $derived(book.metadata.author);
 	const folderTrail = $derived(book.metadata.folderTrail.join(' / ') || 'Books');
@@ -263,9 +263,10 @@
 		};
 
 		if (magazine) {
-			body['column-width'] = '420px';
-			body['column-gap'] = '3rem';
-			body['column-fill'] = 'auto';
+			body['column-width'] = '340px';
+			body['column-gap'] = '2.5rem';
+			body['column-fill'] = 'balance';
+			body['column-rule'] = `1px solid ${mode.reader.link}`;
 		}
 
 		const styles: Record<string, Record<string, string>> = {

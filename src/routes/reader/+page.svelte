@@ -17,11 +17,9 @@
 			Back to Library
 		</a>
 		<div>
-			<p class="text-xs uppercase tracking-[0.35em] text-muted">Phase 2 · Reader</p>
-			<h1 class="text-3xl font-semibold text-strong">Basic EPUB Reader</h1>
-			<p class="text-sm text-muted">
-				Powered by epub.js with seamless in-place rendering—no page reloads, instant chapter display.
-			</p>
+			<p class="text-xs uppercase tracking-[0.35em] text-muted">Return to your last chapter any time</p>
+			<h1 class="text-3xl font-semibold text-strong">Reading Room</h1>
+			<p class="text-sm text-muted">Comfort-first, distraction-light view tailored to this issue.</p>
 		</div>
 	</header>
 
