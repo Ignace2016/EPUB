@@ -119,13 +119,8 @@ body {
 	color: var(--reader-panel-text, #edf1f7);
 }
 
-body:fullscreen,
-body:-webkit-full-screen,
-body:-moz-full-screen,
-body:-ms-fullscreen {
-	background: var(--reader-panel-bg, #050607);
-	color: var(--reader-panel-text, #edf1f7);
-}
+/* Removed fullscreen fallback that forced Night color when vars were missing.
+   Focus backgrounds are applied inline per theme in Reader.svelte. */
 
 .reader-panel a {
 	color: var(--reader-panel-link, #2fd4a7);

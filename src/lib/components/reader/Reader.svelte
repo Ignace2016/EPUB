@@ -2,12 +2,13 @@
 	import { browser } from '$app/environment';
 	import type { LibraryFile, TocNode } from '$lib/utils/epub-scanner';
 import {
-    appearanceModeStore,
-    appearanceModes,
-    type AppearanceModeId,
-    type AppearanceModeConfig,
-    distractionFreeStore,
-    fontSizeStore
+	appearanceModeStore,
+	appearanceModes,
+	type AppearanceModeId,
+	type AppearanceModeConfig,
+	distractionFreeStore,
+	fontSizeStore,
+	getAppearanceConfig
 } from '$lib/stores/reader';
 import FontSizeControl from '$lib/components/FontSizeControl.svelte';
     import Controls from './Controls.svelte';
@@ -33,13 +34,17 @@ let appearanceModeId = $state<AppearanceModeId>(appearanceModes[0].id);
 const isMagazineTitle = Boolean(book.metadata.isMagazine);
 let magazineLayoutEnabled = $state(isMagazineTitle);
 const magazineModeActive = $derived(isMagazineTitle && magazineLayoutEnabled);
-const themeKey = $derived(getThemeKey(appearanceModeId, magazineModeActive));
 let distractionFree = $state(false);
+const themeKey = $derived(getThemeKey(appearanceModeId, magazineModeActive, distractionFree));
 let fontSizePx = $state(18);
 let showHud = $state(true);
 let hudTimer: ReturnType<typeof setTimeout> | null = null;
 const FOCUS_BOTTOM_GAP_PX = 102;
 const FOCUS_TOP_GAP_PX = 96;
+const appearancePalette = $derived(() => getAppearanceConfig(appearanceModeId));
+// Shell follows the theme surface; page follows the theme reader background exactly per mode
+const focusShellBackground = $derived(() => appearancePalette.surface.background);
+const focusPageBackground = $derived(() => appearancePalette.reader.background);
 
 	function encodePathSegments(urlPath: string): string {
 		// Encode each segment but preserve slashes. Keeps spaces, brackets, commas safe.
@@ -190,9 +195,9 @@ const FOCUS_TOP_GAP_PX = 96;
         rendition.on('relocated', relocatedHandler);
 
 		// Add keyboard handlers inside the EPUB iframe so keys work in fullscreen
-		rendition.on('rendered', (_section: any, contents: any) => {
-			if (!contents || boundContents.has(contents)) return;
-			const handler = (e: KeyboardEvent) => {
+        rendition.on('rendered', (_section: any, contents: any) => {
+            if (!contents || boundContents.has(contents)) return;
+            const handler = (e: KeyboardEvent) => {
 				const t = e.target as any;
 				const tag = (t && t.tagName ? String(t.tagName).toLowerCase() : '') as string;
 				if (tag === 'input' || tag === 'textarea') return;
@@ -217,11 +222,18 @@ const FOCUS_TOP_GAP_PX = 96;
 					try { if (document.fullscreenElement) { void document.exitFullscreen(); } } catch {}
 				}
 			};
-			try {
-				contents.document.addEventListener('keydown', handler);
-				boundContents.add(contents);
-			} catch {}
-		});
+            try {
+                contents.document.addEventListener('keydown', handler);
+                boundContents.add(contents);
+            } catch {}
+
+            // Tag date/meta lines to disable drop caps on them (Economist)
+            try {
+                if (isMagazineTitle) {
+                    tagDateMetaLines(contents);
+                }
+            } catch {}
+        });
 	}
 
 	function destroyReader() {
@@ -466,11 +478,43 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 
 	function registerThemes() {
 		if (!rendition) return;
+		const focusStates = [false, true];
 		appearanceModes.forEach((mode) => {
-			rendition.themes.register(getThemeKey(mode.id, false), createThemeStyles(mode, false));
-			rendition.themes.register(getThemeKey(mode.id, true), createThemeStyles(mode, true));
+			[false, true].forEach((isMag) => {
+				focusStates.forEach((isFocus) => {
+					rendition.themes.register(
+						getThemeKey(mode.id, isMag, isFocus),
+						createThemeStyles(mode, isMag, isFocus)
+					);
+				});
+			});
 		});
 	}
+
+    // Tag date-like lines to avoid drop caps on them (magazine content)
+    function tagDateMetaLines(contents: any) {
+        try {
+            const doc: Document | undefined = contents?.document;
+            if (!doc) return;
+            const paragraphs = Array.from(doc.querySelectorAll('p')) as HTMLParagraphElement[];
+            const maxScan = 6;
+            for (let i = 0; i < Math.min(maxScan, paragraphs.length); i++) {
+                const p = paragraphs[i];
+                if (!p) continue;
+                const text = (p.textContent || '').trim();
+                if (!text) continue;
+                // Heuristics: short lines that look like dates, include digits and/or Chinese month/day markers or AM/PM
+                const isShort = text.length <= 40;
+                const hasDigits = /\d/.test(text);
+                const hasCnDate = /[年月日]/.test(text) || /上午|下午/.test(text);
+                const hasMonthEnglish = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)/i.test(text);
+                const hasTime = /(AM|PM|上午|下午)/i.test(text);
+                if (isShort && (hasCnDate || (hasDigits && (hasMonthEnglish || hasTime)))) {
+                    p.classList.add('no-dropcap', 'meta-line');
+                }
+            }
+        } catch {}
+    }
 
 	function selectRenditionTheme(selectedTheme: string) {
 		if (!rendition?.themes) return;
@@ -481,13 +525,50 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 		}
 	}
 
-	function getThemeKey(modeId: AppearanceModeId, magazine: boolean) {
-		return magazine ? `${modeId}-mag` : modeId;
+	function getThemeKey(modeId: AppearanceModeId, magazine: boolean, focus: boolean) {
+		const base = magazine ? `${modeId}-mag` : modeId;
+		return focus ? `${base}-focus` : base;
 	}
 
-	function createThemeStyles(mode: AppearanceModeConfig, magazine: boolean) {
+function resolveFocusBackgrounds(
+	modeId: AppearanceModeId,
+	magazine: boolean,
+	mode: AppearanceModeConfig
+) {
+	const overrides: Record<
+		AppearanceModeId,
+		{ shell: string; page: string; pageMagazine?: string }
+	> = {
+		day: {
+			shell: '#f5f6fb',
+			page: '#ffffff',
+			pageMagazine: '#fff6e9'
+		},
+		night: {
+			shell: '#04060d',
+			page: '#06090f',
+			pageMagazine: '#05080f'
+		},
+		sepia: {
+			shell: '#f2e2c8',
+			page: '#fbf3e2',
+			pageMagazine: '#f6e3c7'
+		}
+	};
+	const theme = overrides[modeId];
+	const shell = theme?.shell ?? mode.surface.background;
+	const page =
+		theme?.[magazine ? 'pageMagazine' : 'page'] ??
+		(magazine ? mode.surface.background : mode.reader.background);
+	return { shell, page };
+}
+
+	function createThemeStyles(mode: AppearanceModeConfig, magazine: boolean, focus: boolean) {
+		const pageBg = focus
+			? resolveFocusBackgrounds(mode.id, magazine, mode).page
+			: mode.reader.background;
 		const body: Record<string, string> = {
-			background: mode.reader.background,
+			background: `${pageBg} !important`,
 			color: mode.reader.text,
 			'font-family': magazine
 				? "'Georgia', 'Times New Roman', serif"
@@ -507,6 +588,9 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 		// epub.js handles pagination/columns; adding CSS columns can hide content.
 
 		const styles: Record<string, Record<string, string>> = {
+			html: { background: `${pageBg} !important`, color: mode.reader.text, 'background-image': 'none !important' },
+			':root, body': { background: `${pageBg} !important`, color: mode.reader.text, 'background-image': 'none !important' },
+			'body *': { 'background': 'transparent !important', 'background-image': 'none !important' },
 			body,
 			a: { color: mode.reader.link },
 			p: { margin: '0 0 0.85em' },
@@ -536,13 +620,30 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 				'margin': '0.2rem 0.6rem 0 0',
 				'font-family': "'Playfair Display', 'Georgia', serif"
 			};
+
+			// Prevent drop caps on detected date/meta lines
+			styles[".no-dropcap::first-letter"] = {
+				'float': 'none !important',
+				'font-size': 'inherit !important',
+				'line-height': 'inherit !important',
+				'margin': '0 !important'
+			};
+			styles[".meta-line"] = {
+				'font-variant-numeric': 'tabular-nums',
+				'letter-spacing': '0.02em'
+			};
 		}
 
 		return styles;
 	}
 </script>
 
-<div class={`space-y-5 ${distractionFree ? 'fixed inset-0 z-40 overflow-hidden bg-[var(--reader-panel-bg)]' : ''}`} data-reader-mode={appearanceModeId} data-magazine-mode={magazineModeActive ? 'true' : 'false'}>
+<div
+	class={`space-y-5 ${distractionFree ? 'fixed inset-0 z-40 overflow-hidden' : ''}`}
+	data-reader-mode={appearanceModeId}
+	data-magazine-mode={magazineModeActive ? 'true' : 'false'}
+	style={distractionFree ? `background:${focusShellBackground};` : ''}
+>
 	{#if !distractionFree}
 	<div class="reader-surface rounded-3xl border p-5 shadow-card">
 		<p class="reader-muted text-xs uppercase tracking-[0.35em]">{folderTrail}</p>
@@ -591,13 +692,21 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 		<div class={`grid ${distractionFree ? 'grid-cols-1' : 'gap-5 lg:grid-cols-[minmax(0,1fr),320px]'}`}>
 		<div
 			class={`reader-panel relative ${distractionFree ? 'h-screen rounded-none border-0 shadow-none' : 'min-h-[80vh] rounded-3xl border shadow-xl'} overflow-hidden`}
-			style={distractionFree ? `padding:${FOCUS_TOP_GAP_PX}px 0 ${FOCUS_BOTTOM_GAP_PX}px 0;` : ''}
+			style={
+				distractionFree
+					? `padding:${FOCUS_TOP_GAP_PX}px 0 ${FOCUS_BOTTOM_GAP_PX}px 0;background:${focusPageBackground};`
+					: ''
+			}
 			ontouchstart={handleTouchStart}
 			ontouchend={handleTouchEnd}
 		>
 			<div
 				class="absolute inset-0"
-				style={distractionFree ? `top:${FOCUS_TOP_GAP_PX}px;left:0;right:0;bottom:${FOCUS_BOTTOM_GAP_PX}px;` : ''}
+				style={
+					distractionFree
+						? `top:${FOCUS_TOP_GAP_PX}px;left:0;right:0;bottom:${FOCUS_BOTTOM_GAP_PX}px;background:${focusPageBackground};`
+						: ''
+				}
 				bind:this={viewerEl}
 			></div>
 
