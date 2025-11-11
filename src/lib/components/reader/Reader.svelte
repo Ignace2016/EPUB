@@ -1,13 +1,17 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import type { LibraryFile, TocNode } from '$lib/utils/epub-scanner';
-	import {
-		appearanceModeStore,
-		appearanceModes,
-		type AppearanceModeId,
-		type AppearanceModeConfig
-	} from '$lib/stores/reader';
-	import Controls from './Controls.svelte';
+import {
+    appearanceModeStore,
+    appearanceModes,
+    type AppearanceModeId,
+    type AppearanceModeConfig,
+    distractionFreeStore,
+    fontSizeStore
+} from '$lib/stores/reader';
+import FontSizeControl from '$lib/components/FontSizeControl.svelte';
+    import Controls from './Controls.svelte';
+    import { tick } from 'svelte';
 	import ChapterList, { type ChapterItem } from './ChapterList.svelte';
 	import MagazineChapters from './MagazineChapters.svelte';
 
@@ -16,17 +20,26 @@
 	let viewerEl: HTMLDivElement | null = null;
 	let bookInstance: any = null;
 	let rendition: any = null;
-	let relocatedHandler: ((location: any) => void) | null = null;
+let relocatedHandler: ((location: any) => void) | null = null;
+let boundContents = new Set<any>();
 
 	let status = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
-	let errorMessage = $state<string | null>(null);
-	let isNavigating = $state(false);
-	let currentHref = $state<string | null>(initialHref);
-	let appearanceModeId = $state<AppearanceModeId>(appearanceModes[0].id);
-	const isMagazineTitle = Boolean(book.metadata.isMagazine);
-	let magazineLayoutEnabled = $state(isMagazineTitle);
-	const magazineModeActive = $derived(isMagazineTitle && magazineLayoutEnabled);
-	const themeKey = $derived(getThemeKey(appearanceModeId, magazineModeActive));
+    let errorMessage = $state<string | null>(null);
+    let isNavigating = $state(false);
+    let currentHref = $state<string | null>(initialHref);
+    let currentPage = $state<number | null>(null);
+    let totalPages = $state<number | null>(null);
+let appearanceModeId = $state<AppearanceModeId>(appearanceModes[0].id);
+const isMagazineTitle = Boolean(book.metadata.isMagazine);
+let magazineLayoutEnabled = $state(isMagazineTitle);
+const magazineModeActive = $derived(isMagazineTitle && magazineLayoutEnabled);
+const themeKey = $derived(getThemeKey(appearanceModeId, magazineModeActive));
+let distractionFree = $state(false);
+let fontSizePx = $state(18);
+let showHud = $state(true);
+let hudTimer: ReturnType<typeof setTimeout> | null = null;
+const FOCUS_BOTTOM_GAP_PX = 102;
+const FOCUS_TOP_GAP_PX = 96;
 
 	function encodePathSegments(urlPath: string): string {
 		// Encode each segment but preserve slashes. Keeps spaces, brackets, commas safe.
@@ -87,6 +100,7 @@
 			attachRenditionListeners();
 			registerThemes();
 			selectRenditionTheme(themeKey);
+			try { rendition.themes.fontSize(`${fontSizePx}px`); } catch {}
 
 			// Try a sequence of reasonable display targets, falling back to default start
 			const candidates: Array<string | null | undefined> = [
@@ -129,6 +143,7 @@
 				attachRenditionListeners();
 				registerThemes();
 				selectRenditionTheme(themeKey);
+				try { rendition.themes.fontSize(`${fontSizePx}px`); } catch {}
 
 				const candidates: Array<string | null | undefined> = [
 					currentHref,
@@ -159,15 +174,54 @@
 		}
 	}
 
-	function attachRenditionListeners() {
-		if (!rendition) return;
-		relocatedHandler = (location: any) => {
-			const href = location?.href ?? location?.start?.href ?? location?.end?.href;
-			if (href) {
-				currentHref = href;
-			}
-		};
-		rendition.on('relocated', relocatedHandler);
+    function attachRenditionListeners() {
+        if (!rendition) return;
+        relocatedHandler = (location: any) => {
+            const href = location?.href ?? location?.start?.href ?? location?.end?.href;
+            if (href) {
+                currentHref = href;
+            }
+            const displayed = location?.displayed ?? location?.end?.displayed ?? location?.start?.displayed;
+            const pageNum = Number(displayed?.page);
+            const totalNum = Number(displayed?.total);
+            currentPage = Number.isFinite(pageNum) ? pageNum : null;
+            totalPages = Number.isFinite(totalNum) ? totalNum : null;
+        };
+        rendition.on('relocated', relocatedHandler);
+
+		// Add keyboard handlers inside the EPUB iframe so keys work in fullscreen
+		rendition.on('rendered', (_section: any, contents: any) => {
+			if (!contents || boundContents.has(contents)) return;
+			const handler = (e: KeyboardEvent) => {
+				const t = e.target as any;
+				const tag = (t && t.tagName ? String(t.tagName).toLowerCase() : '') as string;
+				if (tag === 'input' || tag === 'textarea') return;
+				if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+					e.preventDefault();
+					void rendition?.next();
+				} else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+					e.preventDefault();
+					void rendition?.prev();
+				} else if (e.key && e.key.toLowerCase() === 'f') {
+					e.preventDefault();
+					if (distractionFree) {
+						distractionFreeStore.disable();
+						try { if (document.fullscreenElement) { void document.exitFullscreen(); } } catch {}
+					} else {
+						distractionFreeStore.enable();
+						try { if (!document.fullscreenElement) { void document.documentElement.requestFullscreen(); } } catch {}
+					}
+				} else if (e.key === 'Escape') {
+					e.preventDefault();
+					distractionFreeStore.disable();
+					try { if (document.fullscreenElement) { void document.exitFullscreen(); } } catch {}
+				}
+			};
+			try {
+				contents.document.addEventListener('keydown', handler);
+				boundContents.add(contents);
+			} catch {}
+		});
 	}
 
 	function destroyReader() {
@@ -227,9 +281,39 @@ function handleKeydown(event: KeyboardEvent) {
     if (event.key === 'ArrowRight' || event.key === 'PageDown') {
             event.preventDefault();
             void rendition?.next();
+            if (distractionFree) revealHudTemporarily();
         } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
             event.preventDefault();
             void rendition?.prev();
+            if (distractionFree) revealHudTemporarily();
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            distractionFreeStore.disable();
+            try {
+                if (document.fullscreenElement) {
+                    void document.exitFullscreen();
+                }
+            } catch {}
+        } else if (event.key && event.key.toLowerCase() === 'f') {
+            event.preventDefault();
+            if (distractionFree) {
+                // Toggle off
+                distractionFreeStore.disable();
+                try {
+                    if (document.fullscreenElement) {
+                        void document.exitFullscreen();
+                    }
+                } catch {}
+            } else {
+                // Toggle on
+                distractionFreeStore.enable();
+                try {
+                    if (!document.fullscreenElement) {
+                        void document.documentElement.requestFullscreen();
+                    }
+                } catch {}
+            }
+            revealHudTemporarily();
         }
 	}
 
@@ -259,11 +343,58 @@ function handleKeydown(event: KeyboardEvent) {
 		return () => destroyReader();
 	});
 
-	$effect(() => {
-		if (!browser) return;
-		window.addEventListener('keydown', handleKeydown);
-		return () => window.removeEventListener('keydown', handleKeydown);
-	});
+    $effect(() => {
+        if (!browser) return;
+        window.addEventListener('keydown', handleKeydown);
+        return () => window.removeEventListener('keydown', handleKeydown);
+    });
+
+    // When toggling distraction-free mode, force epub.js to recompute layout
+    $effect(() => {
+        // touch the store-driven state so this effect runs on toggle
+        const df = distractionFree; // eslint-disable-line @typescript-eslint/no-unused-vars
+        if (!browser || !rendition) return;
+        void (async () => {
+            await tick();
+            try {
+                rendition.resize();
+            } catch {}
+        })();
+    });
+
+    // Hide HUD in focus mode when idle, show on interaction
+    function revealHudTemporarily(delay = 1400) {
+        showHud = true;
+        if (hudTimer) clearTimeout(hudTimer);
+        hudTimer = setTimeout(() => {
+            showHud = false;
+        }, delay);
+    }
+
+    $effect(() => {
+        if (!browser) return;
+        if (distractionFree) {
+            revealHudTemporarily(1400);
+            const onMove = () => revealHudTemporarily(1400);
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('touchstart', onMove);
+            const onFsChange = () => {
+                try {
+                    if (!document.fullscreenElement && distractionFree) {
+                        distractionFreeStore.disable();
+                    }
+                } catch {}
+            };
+            document.addEventListener('fullscreenchange', onFsChange);
+            return () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('touchstart', onMove);
+                document.removeEventListener('fullscreenchange', onFsChange);
+                if (hudTimer) clearTimeout(hudTimer);
+                showHud = true;
+            };
+        }
+    });
 
 	// Keep pagination metrics correct when the window resizes
 	$effect(() => {
@@ -279,11 +410,20 @@ function handleKeydown(event: KeyboardEvent) {
 	});
 
 		$effect(() => {
-			const unsubscribe = appearanceModeStore.subscribe((modeId) => {
-				appearanceModeId = modeId;
-			});
-			return () => unsubscribe();
-		});
+        const unsubscribe = appearanceModeStore.subscribe((modeId) => {
+            appearanceModeId = modeId;
+        });
+        const unsubDfm = distractionFreeStore.subscribe((v) => (distractionFree = v));
+        const unsubFont = fontSizeStore.subscribe((v) => {
+            fontSizePx = v;
+            try { rendition?.themes?.fontSize?.(`${v}px`); } catch {}
+        });
+        return () => {
+            unsubscribe();
+            unsubDfm();
+            unsubFont();
+        };
+    });
 
 		$effect(() => {
 			if (!rendition) return;
@@ -349,10 +489,18 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 		const body: Record<string, string> = {
 			background: mode.reader.background,
 			color: mode.reader.text,
-			'font-family': magazine ? "'Georgia', 'Times New Roman', serif" : "'Inter', system-ui, sans-serif",
-			'line-height': magazine ? '1.8' : '1.6',
-			margin: '0',
-			padding: magazine ? '2rem 3rem' : '1.5rem'
+			'font-family': magazine
+				? "'Georgia', 'Times New Roman', serif"
+				: "'Georgia', 'Times New Roman', serif",
+			'line-height': magazine ? '1.8' : '1.7',
+			'max-width': magazine ? 'auto' : '68ch',
+			margin: magazine ? '0' : '0 auto',
+			padding: magazine ? '2rem 3rem' : '2rem 1.75rem',
+			'padding-bottom': magazine ? '32rem' : '32rem',
+			'text-rendering': 'optimizeLegibility',
+			'font-kerning': 'normal',
+			hyphens: 'auto',
+			'word-break': 'normal'
 		};
 
 		// Note: Avoid setting CSS columns inside the EPUB document here.
@@ -360,7 +508,9 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 
 		const styles: Record<string, Record<string, string>> = {
 			body,
-			a: { color: mode.reader.link }
+			a: { color: mode.reader.link },
+			p: { margin: '0 0 0.85em' },
+			img: { 'max-width': '100%', height: 'auto' }
 		};
 
 		if (magazine) {
@@ -392,7 +542,8 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 	}
 </script>
 
-<div class="space-y-5" data-reader-mode={appearanceModeId} data-magazine-mode={magazineModeActive ? 'true' : 'false'}>
+<div class={`space-y-5 ${distractionFree ? 'fixed inset-0 z-40 overflow-hidden bg-[var(--reader-panel-bg)]' : ''}`} data-reader-mode={appearanceModeId} data-magazine-mode={magazineModeActive ? 'true' : 'false'}>
+	{#if !distractionFree}
 	<div class="reader-surface rounded-3xl border p-5 shadow-card">
 		<p class="reader-muted text-xs uppercase tracking-[0.35em]">{folderTrail}</p>
 		<h2 class="text-2xl font-semibold">{title}</h2>
@@ -403,8 +554,9 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 			</p>
 		{/if}
 	</div>
+	{/if}
 
-	{#if isMagazineTitle}
+	{#if isMagazineTitle && !distractionFree}
 		<div class="reader-surface flex flex-wrap items-center justify-between gap-4 rounded-3xl border p-4">
 			<div>
 				<p class="reader-muted text-xs uppercase tracking-[0.35em]">Magazine Layout</p>
@@ -425,6 +577,7 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 		</div>
 	{/if}
 
+	{#if !distractionFree}
 	<Controls
 		{chapterLabel}
 		onPrev={() => { void rendition?.prev(); }}
@@ -433,14 +586,20 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 		{isNextDisabled}
 		{isNavigating}
 	/>
+	{/if}
 
-		<div class="grid gap-5 lg:grid-cols-[minmax(0,1fr),320px]">
+		<div class={`grid ${distractionFree ? 'grid-cols-1' : 'gap-5 lg:grid-cols-[minmax(0,1fr),320px]'}`}>
 		<div
-			class="reader-panel relative min-h-[80vh] overflow-hidden rounded-3xl border shadow-xl"
+			class={`reader-panel relative ${distractionFree ? 'h-screen rounded-none border-0 shadow-none' : 'min-h-[80vh] rounded-3xl border shadow-xl'} overflow-hidden`}
+			style={distractionFree ? `padding:${FOCUS_TOP_GAP_PX}px 0 ${FOCUS_BOTTOM_GAP_PX}px 0;` : ''}
 			ontouchstart={handleTouchStart}
 			ontouchend={handleTouchEnd}
 		>
-			<div class="absolute inset-0" bind:this={viewerEl}></div>
+			<div
+				class="absolute inset-0"
+				style={distractionFree ? `top:${FOCUS_TOP_GAP_PX}px;left:0;right:0;bottom:${FOCUS_BOTTOM_GAP_PX}px;` : ''}
+				bind:this={viewerEl}
+			></div>
 
 			{#if isNavigating && status === 'ready'}
 				<div class="reader-panel-badge pointer-events-none absolute right-4 top-4 rounded-full border px-3 py-1 text-xs">
@@ -448,8 +607,8 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 				</div>
 			{/if}
 
-			{#if status !== 'ready'}
-				<div class="reader-panel-overlay absolute inset-0 flex flex-col items-center justify-center text-center">
+            {#if status !== 'ready'}
+                <div class="reader-panel-overlay absolute inset-0 flex flex-col items-center justify-center text-center">
 					{#if status === 'loading'}
 						<div class="flex flex-col items-center gap-3">
 							<div
@@ -471,19 +630,56 @@ function normalizeTargetHref(target?: string | null): string | undefined {
 							>
 								Try Again
 							</button>
-						</div>
-					{/if}
+                </div>
+            {/if}
+
+			{#if distractionFree && currentPage !== null}
+				<div
+					class="pointer-events-none absolute left-1/2 -translate-x-1/2 transform z-10"
+					style={`bottom:${Math.max(FOCUS_BOTTOM_GAP_PX / 2, 16)}px`}
+				>
+					<span class="text-sm font-semibold" style="color: var(--reader-panel-text); opacity: 0.9;">{currentPage}</span>
 				</div>
 			{/if}
+        </div>
+			{/if}
 		</div>
-		{#if isMagazineTitle}
-			<MagazineChapters sections={magazineSections} selectedHref={currentHref} onSelectChapter={chapterSelectHandler} />
-		{:else}
-			<ChapterList chapters={chapters} selectedHref={currentHref} onSelectChapter={chapterSelectHandler} />
+		{#if !distractionFree}
+			{#if isMagazineTitle}
+				<MagazineChapters sections={magazineSections} selectedHref={currentHref} onSelectChapter={chapterSelectHandler} />
+			{:else}
+				<ChapterList chapters={chapters} selectedHref={currentHref} onSelectChapter={chapterSelectHandler} />
+			{/if}
 		{/if}
 	</div>
 
-	<p class="reader-muted text-center text-xs">
-		Typography polish and progress tracking arrive in the next phase.
-	</p>
+	{#if distractionFree}
+        <div class={`pointer-events-none fixed inset-0 z-50 transition-opacity duration-200 ${showHud ? 'opacity-100' : 'opacity-0'}`}>
+            <div class="pointer-events-auto absolute right-6 bottom-6 flex items-center gap-3">
+                <FontSizeControl />
+                <Controls
+                    {chapterLabel}
+                    onPrev={() => { void rendition?.prev(); }}
+                    onNext={() => { void rendition?.next(); }}
+                    {isPrevDisabled}
+					{isNextDisabled}
+					{isNavigating}
+				/>
+			</div>
+			<div class="pointer-events-auto absolute left-6 top-6">
+                <button
+                    type="button"
+                    class="reader-button rounded-full border px-3 py-2 text-xs backdrop-blur transition"
+                    title="Exit focus"
+                    onclick={() => { try { if (document.fullscreenElement) { void document.exitFullscreen(); } } catch {} ; distractionFreeStore.disable(); }}
+                >
+                    Exit Focus
+                </button>
+			</div>
+		</div>
+	{:else}
+		<p class="reader-muted text-center text-xs">
+			Typography polish and progress tracking arrive in the next phase.
+		</p>
+	{/if}
 </div>

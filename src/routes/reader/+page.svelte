@@ -1,6 +1,8 @@
 <script lang="ts">
 	import Reader from '$lib/components/reader/Reader.svelte';
 	import type { PageData } from './$types';
+    import { distractionFreeStore } from '$lib/stores/reader';
+    import FontSizeControl from '$lib/components/FontSizeControl.svelte';
 
 	let { data } = $props<{ data: PageData }>();
 </script>
@@ -16,6 +18,17 @@
 				<path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
         Back to Library
+    </button>
+    <div class="ml-auto flex items-center gap-3">
+        <FontSizeControl />
+    </div>
+    <button
+        type="button"
+        class="reader-button ml-auto inline-flex items-center rounded-full border px-3 py-2 text-xs transition"
+        title="Focus mode"
+        onclick={() => { try { if (!document.fullscreenElement) { void document.documentElement.requestFullscreen(); } } catch {} ; distractionFreeStore.enable(); }}
+    >
+        Focus
     </button>
 		<div>
 			<p class="text-xs uppercase tracking-[0.35em] text-muted">Return to your last chapter any time</p>

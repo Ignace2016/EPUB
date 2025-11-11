@@ -91,5 +91,39 @@ function createAppearanceModeStore() {
 export const appearanceModeStore = createAppearanceModeStore();
 
 export function getAppearanceConfig(modeId: AppearanceModeId) {
-	return appearanceModes.find((mode) => mode.id === modeId) ?? appearanceModes[0];
+    return appearanceModes.find((mode) => mode.id === modeId) ?? appearanceModes[0];
 }
+
+// Distraction-Free Mode
+function createDistractionFreeStore() {
+    const { subscribe, set, update } = writable(false);
+    return {
+        subscribe,
+        enable: () => set(true),
+        disable: () => set(false),
+        toggle: () => update((v) => !v)
+    };
+}
+
+export const distractionFreeStore = createDistractionFreeStore();
+
+// Font size (px) for reader content
+function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+}
+
+export const fontSizeStore = (() => {
+    const MIN = 14;
+    const MAX = 28;
+    const STEP = 2;
+    const DEFAULT = 22;
+    const { subscribe, set, update } = writable<number>(DEFAULT);
+    return {
+        subscribe,
+        set: (px: number) => set(clamp(px, MIN, MAX)),
+        increase: () => update((v) => clamp(v + STEP, MIN, MAX)),
+        decrease: () => update((v) => clamp(v - STEP, MIN, MAX)),
+        reset: () => set(DEFAULT),
+        limits: { MIN, MAX, STEP, DEFAULT }
+    };
+})();

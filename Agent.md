@@ -404,14 +404,14 @@ The Astra EPUB Reader is complete when:
 
 When building, follow this sequence:
 
-1. **Phase 1**: Library browser + EPUB scanning
-2. **Phase 2**: Basic reader with epub.js
-3. **Phase 3**: Chapter navigation (prev/next)
-4. **Phase 4**: Appearance modes (Day/Night/Sepia)
-5. **Phase 5**: Magazine mode layout
-6. **Phase 6**: Distraction-free mode
-7. **Phase 7**: Font controls + typography
-8. **Phase 8**: Progress tracking
+1. **Phase 1**: Library browser + EPUB scanning — DONE
+2. **Phase 2**: Basic reader with epub.js — DONE
+3. **Phase 3**: Chapter navigation (prev/next) — DONE
+4. **Phase 4**: Appearance modes (Day/Night/Sepia) — DONE
+5. **Phase 5**: Magazine mode layout — DONE
+6. **Phase 6**: Distraction-free mode — DONE
+7. **Phase 7**: Font controls + typography — DONE
+8. **Phase 8**: Progress tracking — IN PROGRESS
 9. **Phase 9**: Polish + transitions
 10. **Phase 10**: Mobile optimization
 
