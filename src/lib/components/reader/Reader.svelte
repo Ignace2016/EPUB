@@ -103,8 +103,7 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
 				allowScriptedContent: true
 			});
 			attachRenditionListeners();
-			registerThemes();
-			selectRenditionTheme(themeKey);
+			applyAppearanceToRendition();
 			try { rendition.themes.fontSize(`${fontSizePx}px`); } catch {}
 
 			// Try a sequence of reasonable display targets, falling back to default start
@@ -146,8 +145,7 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
 					allowScriptedContent: true
 				});
 				attachRenditionListeners();
-				registerThemes();
-				selectRenditionTheme(themeKey);
+				applyAppearanceToRendition();
 				try { rendition.themes.fontSize(`${fontSizePx}px`); } catch {}
 
 				const candidates: Array<string | null | undefined> = [
@@ -227,12 +225,10 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
                 boundContents.add(contents);
             } catch {}
 
+            // Force theme page background in the iframe
+            try { applyThemeBackground(contents); } catch {}
             // Tag date/meta lines to disable drop caps on them (Economist)
-            try {
-                if (isMagazineTitle) {
-                    tagDateMetaLines(contents);
-                }
-            } catch {}
+            try { if (isMagazineTitle) tagDateMetaLines(contents); } catch {}
         });
 	}
 
@@ -439,7 +435,11 @@ function handleKeydown(event: KeyboardEvent) {
 
 		$effect(() => {
 			if (!rendition) return;
-			selectRenditionTheme(themeKey);
+			applyAppearanceToRendition();
+			try {
+				const items = (rendition as any)?.getContents?.() ?? [];
+				for (const c of items) applyThemeBackground(c);
+			} catch {}
 		});
 
 	const chapterSelectHandler = (href?: string) => {
@@ -476,20 +476,9 @@ function normalizeTargetHref(target?: string | null): string | undefined {
     return noFrag.replace(/^\/+/, '');
 }
 
-	function registerThemes() {
-		if (!rendition) return;
-		const focusStates = [false, true];
-		appearanceModes.forEach((mode) => {
-			[false, true].forEach((isMag) => {
-				focusStates.forEach((isFocus) => {
-					rendition.themes.register(
-						getThemeKey(mode.id, isMag, isFocus),
-						createThemeStyles(mode, isMag, isFocus)
-					);
-				});
-			});
-		});
-	}
+function registerThemes() {
+    // No-op: legacy. Using applyAppearanceToRendition now.
+}
 
     // Tag date-like lines to avoid drop caps on them (magazine content)
     function tagDateMetaLines(contents: any) {
@@ -516,19 +505,14 @@ function normalizeTargetHref(target?: string | null): string | undefined {
         } catch {}
     }
 
-	function selectRenditionTheme(selectedTheme: string) {
-		if (!rendition?.themes) return;
-		try {
-			rendition.themes.select(selectedTheme);
-		} catch (err) {
-			console.warn('Unable to apply theme', selectedTheme, err);
-		}
-	}
+function selectRenditionTheme(selectedTheme: string) {
+    // No-op: legacy. Using applyAppearanceToRendition now.
+}
 
-	function getThemeKey(modeId: AppearanceModeId, magazine: boolean, focus: boolean) {
-		const base = magazine ? `${modeId}-mag` : modeId;
-		return focus ? `${base}-focus` : base;
-	}
+function getThemeKey(modeId: AppearanceModeId, magazine: boolean, focus: boolean) {
+    // Legacy helper; no longer used.
+    return magazine ? `${modeId}-mag` : modeId;
+}
 
 function resolveFocusBackgrounds(
 	modeId: AppearanceModeId,
@@ -563,7 +547,7 @@ function resolveFocusBackgrounds(
 	return { shell, page };
 }
 
-	function createThemeStyles(mode: AppearanceModeConfig, magazine: boolean, focus: boolean) {
+function createThemeStyles(mode: AppearanceModeConfig, magazine: boolean, focus: boolean) {
 		const pageBg = focus
 			? resolveFocusBackgrounds(mode.id, magazine, mode).page
 			: mode.reader.background;
@@ -632,10 +616,60 @@ function resolveFocusBackgrounds(
 				'font-variant-numeric': 'tabular-nums',
 				'letter-spacing': '0.02em'
 			};
-		}
+}
 
 		return styles;
 	}
+
+// Force the themed background color inside the EPUB iframe document
+function applyThemeBackground(contents: any) {
+    try {
+        const doc: Document | undefined = contents?.document;
+        const iframe: HTMLIFrameElement | undefined = contents?.iframe;
+        if (!doc) return;
+        const palette = getAppearanceConfig(appearanceModeId);
+        const pageBg = palette.reader.background;
+        const text = palette.reader.text;
+        // Root and body backgrounds
+        doc.documentElement?.setAttribute('style', `background:${pageBg} !important; background-image:none !important; color:${text} !important;`);
+        const body = doc.body as HTMLElement;
+        if (body) {
+            body.style.setProperty('background', pageBg, 'important');
+            body.style.setProperty('background-image', 'none', 'important');
+            body.style.setProperty('color', text, 'important');
+        }
+        // Common wrappers transparent so page color shows through
+        ['div','main','article','section'].forEach((sel) => {
+            doc.querySelectorAll(sel).forEach((el) => {
+                (el as HTMLElement).style.setProperty('background', 'transparent', 'important');
+                (el as HTMLElement).style.setProperty('background-image', 'none', 'important');
+            });
+        });
+        if (iframe) iframe.style.background = pageBg;
+    } catch {}
+}
+
+// Apply current appearance palette to epub.js rendition using a single theme key
+function applyAppearanceToRendition() {
+    if (!rendition) return;
+    const palette = getAppearanceConfig(appearanceModeId);
+    const pageBg = palette.reader.background;
+    const text = palette.reader.text;
+    const link = palette.reader.link;
+    const styles: Record<string, Record<string, string>> = {
+        html: { background: `${pageBg} !important`, color: text, 'background-image': 'none !important' },
+        ':root, body': { background: `${pageBg} !important`, color: text, 'background-image': 'none !important' },
+        'body *': { background: 'transparent !important', 'background-image': 'none !important' },
+        body: { 'line-height': '1.6', margin: '0', padding: '1.75rem' },
+        a: { color: link }
+    };
+    try {
+        rendition.themes.register('app-theme', styles);
+        rendition.themes.select('app-theme');
+    } catch (e) {
+        // ignore
+    }
+}
 </script>
 
 <div
