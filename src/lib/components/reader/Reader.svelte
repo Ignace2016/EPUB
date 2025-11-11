@@ -28,8 +28,17 @@ let boundContents = new Set<any>();
     let errorMessage = $state<string | null>(null);
     let isNavigating = $state(false);
     let currentHref = $state<string | null>(initialHref);
-    let currentPage = $state<number | null>(null);
-    let totalPages = $state<number | null>(null);
+	let currentPage = $state<number | null>(null);
+	let totalPages = $state<number | null>(null);
+	let locationsReady = false;
+	const LOCATION_BREAKPOINT = 900;
+    // Global pagination map (href -> pages and cumulative offsets) built offscreen
+    let globalPagesReady = $state(false);
+    let globalPagesTotal = 0;
+    let pagesByHref: Record<string, number> = {};
+    let offsetByHref: Record<string, number> = {};
+    let paginationBuildSeq = 0;
+    let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 let appearanceModeId = $state<AppearanceModeId>(appearanceModes[0].id);
 const isMagazineTitle = Boolean(book.metadata.isMagazine);
 let magazineLayoutEnabled = $state(isMagazineTitle);
@@ -102,8 +111,8 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
 				flow: 'paginated',
 				allowScriptedContent: true
 			});
-			attachRenditionListeners();
-			applyAppearanceToRendition();
+            attachRenditionListeners();
+            applyAppearanceToRendition();
 			try { rendition.themes.fontSize(`${fontSizePx}px`); } catch {}
 
 			// Try a sequence of reasonable display targets, falling back to default start
@@ -113,20 +122,29 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
 				undefined
 			];
 
-			let displayed = false;
-			for (const target of candidates) {
-				try {
-					await rendition.display(normalizeTargetHref(target));
-					displayed = true;
-					break;
-				} catch (e) {
-					// continue to next candidate
-				}
-			}
+            let displayed = false;
+            for (const target of candidates) {
+                try {
+                    await rendition.display(normalizeTargetHref(target));
+                    displayed = true;
+                    break;
+                } catch (e) {
+                    // continue to next candidate
+                }
+            }
 
-			if (!displayed) {
-				throw new Error('No Section Found');
-			}
+            if (!displayed) {
+                throw new Error('No Section Found');
+            }
+
+            // Compute current spread pages immediately (fast); defer heavy global work
+            try {
+                const loc = (rendition as any)?.currentLocation?.();
+                if (loc) updatePageMetrics(loc);
+            } catch {}
+
+            // Kick off global pagination map build based on current viewport (deferred)
+            scheduleGlobalPaginationRebuild(800);
 
 			status = 'ready';
 		} catch (firstErr) {
@@ -144,8 +162,8 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
 					flow: 'paginated',
 					allowScriptedContent: true
 				});
-				attachRenditionListeners();
-				applyAppearanceToRendition();
+                attachRenditionListeners();
+                applyAppearanceToRendition();
 				try { rendition.themes.fontSize(`${fontSizePx}px`); } catch {}
 
 				const candidates: Array<string | null | undefined> = [
@@ -153,17 +171,26 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
 					navigableChapters[0]?.href,
 					undefined
 				];
-				let displayed = false;
-				for (const target of candidates) {
-					try {
-						await rendition.display(normalizeTargetHref(target));
-						displayed = true;
-						break;
-					} catch (e) {}
-				}
-				if (!displayed) {
-					throw new Error('No Section Found');
-				}
+                let displayed = false;
+                for (const target of candidates) {
+                    try {
+                        await rendition.display(normalizeTargetHref(target));
+                        displayed = true;
+                        break;
+                    } catch (e) {}
+                }
+                if (!displayed) {
+                    throw new Error('No Section Found');
+                }
+
+                // Compute current spread pages immediately (fast); defer heavy global work
+                try {
+                    const loc = (rendition as any)?.currentLocation?.();
+                    if (loc) updatePageMetrics(loc);
+                } catch {}
+
+                // Kick off global pagination map build based on current viewport (deferred)
+                scheduleGlobalPaginationRebuild(800);
 
 				status = 'ready';
 			} catch (secondErr) {
@@ -184,11 +211,11 @@ const focusPageBackground = $derived(() => appearancePalette.reader.background);
             if (href) {
                 currentHref = href;
             }
-            const displayed = location?.displayed ?? location?.end?.displayed ?? location?.start?.displayed;
-            const pageNum = Number(displayed?.page);
-            const totalNum = Number(displayed?.total);
-            currentPage = Number.isFinite(pageNum) ? pageNum : null;
-            totalPages = Number.isFinite(totalNum) ? totalNum : null;
+            // Generate global locations lazily on first relocation
+            if (!locationsReady) {
+                void ensureLocationsGenerated();
+            }
+            updatePageMetrics(location);
         };
         rendition.on('relocated', relocatedHandler);
 
@@ -412,6 +439,7 @@ function handleKeydown(event: KeyboardEvent) {
 				// Let epub.js recompute pages based on current container size
 				rendition?.resize();
 			} catch {}
+            scheduleGlobalPaginationRebuild(400);
 		};
 		window.addEventListener('resize', onResize);
 		return () => window.removeEventListener('resize', onResize);
@@ -425,6 +453,7 @@ function handleKeydown(event: KeyboardEvent) {
         const unsubFont = fontSizeStore.subscribe((v) => {
             fontSizePx = v;
             try { rendition?.themes?.fontSize?.(`${v}px`); } catch {}
+            scheduleGlobalPaginationRebuild(250);
         });
         return () => {
             unsubscribe();
@@ -434,13 +463,56 @@ function handleKeydown(event: KeyboardEvent) {
     });
 
 		$effect(() => {
-			if (!rendition) return;
-			applyAppearanceToRendition();
-			try {
-				const items = (rendition as any)?.getContents?.() ?? [];
-				for (const c of items) applyThemeBackground(c);
-			} catch {}
-		});
+            // Re-run when either the rendition is ready or the appearance mode changes
+            const _mode = appearanceModeId; // establish reactive dependency
+            if (!rendition) return;
+            applyAppearanceToRendition();
+            refreshThemeOnActiveViews();
+            // Appearance changes can slightly alter layout; rebuild globally with debounce
+            scheduleGlobalPaginationRebuild(300);
+        });
+
+    function refreshThemeOnActiveViews() {
+        if (!rendition) return;
+        let applied = false;
+        try {
+            // Try epub.js manager views first
+            const manager: any = (rendition as any)?.manager;
+            const views: any = manager?.views;
+            const list: any[] = (views && (views._views || views.views)) || [];
+            for (const v of list) {
+                const contents = (v && (v.contents || v._contents)) || null;
+                if (contents && contents.document) {
+                    applyThemeBackground(contents);
+                    applied = true;
+                }
+            }
+        } catch {}
+        if (!applied) {
+            try {
+                // Fallback: some builds expose getContents()
+                const items = (rendition as any)?.getContents?.() ?? [];
+                for (const c of items) {
+                    if (c?.document) {
+                        applyThemeBackground(c);
+                        applied = true;
+                    }
+                }
+            } catch {}
+        }
+        if (!applied) {
+            // Last resort: re-display current CFI/href to trigger rendered hook
+            try {
+                const loc = (rendition as any)?.currentLocation?.();
+                const cfi = loc?.start?.cfi || loc?.cfi || null;
+                if (cfi) {
+                    void rendition.display(cfi);
+                } else if (currentHref) {
+                    void rendition.display(currentHref);
+                }
+            } catch {}
+        }
+    }
 
 	const chapterSelectHandler = (href?: string) => {
 		void displayHref(href);
@@ -649,6 +721,48 @@ function applyThemeBackground(contents: any) {
     } catch {}
 }
 
+// Compute page/total from current location (fallbacks to displayed.*)
+function updatePageMetrics(location: any) {
+    try {
+        // Prefer global pagination map when available; otherwise use current spread's displayed metrics.
+        const href = location?.start?.href ?? location?.href ?? location?.end?.href ?? null;
+        const normalized = normalizeHref(href);
+        const disp = location?.displayed ?? location?.end?.displayed ?? location?.start?.displayed;
+        const pageNum = Number(disp?.page);
+        const totalNum = Number(disp?.total);
+
+        if (globalPagesReady && normalized && Number.isFinite(pageNum)) {
+            const before = Number(offsetByHref[normalized] ?? 0);
+            const total = Number(globalPagesTotal || 0);
+            currentPage = before + pageNum;
+            totalPages = total > 0 ? total : null;
+            return;
+        }
+        const displayed = location?.displayed ?? location?.end?.displayed ?? location?.start?.displayed;
+        const pageNum2 = Number(displayed?.page);
+        const totalNum2 = Number(displayed?.total);
+        if (Number.isFinite(pageNum2)) currentPage = pageNum2;
+        if (Number.isFinite(totalNum2)) totalPages = totalNum2;
+    } catch {}
+}
+
+// Generate epub.js global locations once per book
+async function ensureLocationsGenerated() {
+    if (locationsReady || !bookInstance) return;
+    try {
+        await (bookInstance as any).ready;
+        const has = (bookInstance as any).locations && (bookInstance as any).locations.total;
+        if (!has) {
+            await (bookInstance as any).locations.generate(LOCATION_BREAKPOINT);
+        }
+        const total = (bookInstance as any).locations?.total;
+        locationsReady = typeof total === 'number' && Number.isFinite(total) && total > 0;
+        if (locationsReady) totalPages = total;
+    } catch {
+        locationsReady = false;
+    }
+}
+
 // Apply current appearance palette to epub.js rendition using a single theme key
 function applyAppearanceToRendition() {
     if (!rendition) return;
@@ -668,6 +782,182 @@ function applyAppearanceToRendition() {
         rendition.themes.select('app-theme');
     } catch (e) {
         // ignore
+    }
+}
+
+// Helper: apply current theme to an arbitrary epub.js rendition (used for offscreen meter)
+function applyAppearanceToRenditionInstance(r: any) {
+    if (!r) return;
+    const palette = getAppearanceConfig(appearanceModeId);
+    const pageBg = palette.reader.background;
+    const text = palette.reader.text;
+    const link = palette.reader.link;
+    const styles: Record<string, Record<string, string>> = {
+        html: { background: `${pageBg} !important`, color: text, 'background-image': 'none !important' },
+        ':root, body': { background: `${pageBg} !important`, color: text, 'background-image': 'none !important' },
+        'body *': { background: 'transparent !important', 'background-image': 'none !important' },
+        body: { 'line-height': '1.6', margin: '0', padding: '1.75rem' },
+        a: { color: link }
+    };
+    try {
+        r.themes.register('app-theme', styles);
+        r.themes.select('app-theme');
+        try { r.themes.fontSize(`${fontSizePx}px`); } catch {}
+    } catch {}
+}
+
+function scheduleGlobalPaginationRebuild(delay = 300) {
+    if (rebuildTimer) clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(() => {
+        void buildGlobalPagination();
+    }, delay);
+}
+
+async function buildGlobalPagination() {
+    if (!browser || !viewerEl) return;
+    const seq = ++paginationBuildSeq;
+    globalPagesReady = false;
+    pagesByHref = {};
+    offsetByHref = {};
+    globalPagesTotal = 0;
+
+    // Try cache first (per book, per viewport, per theme+font)
+    const cached = loadPaginationCache();
+    if (cached) {
+        pagesByHref = cached.pagesByHref;
+        offsetByHref = cached.offsetByHref;
+        globalPagesTotal = cached.total;
+        globalPagesReady = true;
+        try {
+            const loc = (rendition as any)?.currentLocation?.();
+            if (loc) updatePageMetrics(loc);
+        } catch {}
+        return;
+    }
+
+    // Create an offscreen measurement container the same size as the visible viewer
+    const rect = viewerEl.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(rect.width || viewerEl.clientWidth || 800));
+    const h = Math.max(1, Math.floor(rect.height || viewerEl.clientHeight || 600));
+    const meterDiv = document.createElement('div');
+    Object.assign(meterDiv.style, {
+        position: 'fixed',
+        left: '-99999px',
+        top: '-99999px',
+        width: `${w}px`,
+        height: `${h}px`,
+        visibility: 'hidden',
+        overflow: 'hidden',
+        contain: 'strict'
+    } as CSSStyleDeclaration);
+    document.body.appendChild(meterDiv);
+
+    let meterBook: any = null;
+    let meter: any = null;
+    try {
+        const module = await import('epubjs');
+        const ePub = module.default;
+        // Use the same URL as the active book to avoid touching the visible rendition
+        meterBook = ePub(bookUrl);
+        meter = meterBook.renderTo(meterDiv, { width: w, height: h, flow: 'paginated', allowScriptedContent: true });
+        applyAppearanceToRenditionInstance(meter);
+
+        await meterBook.ready;
+        const items: any[] = (meterBook as any)?.spine?.spineItems ?? [];
+        let total = 0;
+        const BUDGET_MS = 24;
+        let start = performance.now();
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const href: string | undefined = item?.href;
+            if (!href) continue;
+            const norm = normalizeTargetHref(href);
+            try {
+                await meter.display(norm);
+                const loc = (meter as any)?.currentLocation?.();
+                const displayed = loc?.displayed ?? loc?.end?.displayed ?? loc?.start?.displayed;
+                const pages = Number(displayed?.total);
+                const pagesClamped = Number.isFinite(pages) && pages > 0 ? pages : 1;
+                pagesByHref[normalizeHref(href)!] = pagesClamped;
+                offsetByHref[normalizeHref(href)!] = total;
+                total += pagesClamped;
+            } catch {
+                // If we can't measure, assume at least 1 page
+                pagesByHref[normalizeHref(href)!] = 1;
+                offsetByHref[normalizeHref(href)!] = total;
+                total += 1;
+            }
+
+            // Yield to keep UI responsive
+            if (performance.now() - start > BUDGET_MS) {
+                start = performance.now();
+                await new Promise((r) => setTimeout(r, 0));
+                // Abort if a newer build started
+                if (seq !== paginationBuildSeq) break;
+            }
+        }
+        // Guard against race with a later rebuild
+        if (seq === paginationBuildSeq) {
+            globalPagesTotal = total;
+            globalPagesReady = total > 0;
+            // Recompute current metrics with the global map
+            try {
+                const loc = (rendition as any)?.currentLocation?.();
+                if (loc) updatePageMetrics(loc);
+            } catch {}
+            // Save to cache for next time
+            savePaginationCache({ total, pagesByHref, offsetByHref });
+        }
+    } catch {
+        // Ignore errors; fallback to per-chapter metrics remains
+    } finally {
+        try { meter?.destroy?.(); } catch {}
+        try { meterBook?.destroy?.(); } catch {}
+        try { document.body.removeChild(meterDiv); } catch {}
+    }
+}
+
+type PaginationCache = {
+    total: number;
+    pagesByHref: Record<string, number>;
+    offsetByHref: Record<string, number>;
+};
+
+function getPaginationCacheKey(): string | null {
+    try {
+        if (!browser) return null;
+        const rect = viewerEl?.getBoundingClientRect();
+        const w = Math.floor(rect?.width || 0);
+        const h = Math.floor(rect?.height || 0);
+        const mode = appearanceModeId;
+        const key = `pagination:${bookUrl}:${mode}:${fontSizePx}:${w}x${h}`;
+        return key;
+    } catch {
+        return null;
+    }
+}
+
+function loadPaginationCache(): PaginationCache | null {
+    try {
+        const key = getPaginationCacheKey();
+        if (!key) return null;
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as PaginationCache;
+        if (!parsed || typeof parsed.total !== 'number') return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function savePaginationCache(data: PaginationCache) {
+    try {
+        const key = getPaginationCacheKey();
+        if (!key) return;
+        localStorage.setItem(key, JSON.stringify(data));
+    } catch {
+        // ignore quota or serialization errors
     }
 }
 </script>
@@ -776,14 +1066,7 @@ function applyAppearanceToRendition() {
                 </div>
             {/if}
 
-			{#if distractionFree && currentPage !== null}
-				<div
-					class="pointer-events-none absolute left-1/2 -translate-x-1/2 transform z-10"
-					style={`bottom:${Math.max(FOCUS_BOTTOM_GAP_PX / 2, 16)}px`}
-				>
-					<span class="text-sm font-semibold" style="color: var(--reader-panel-text); opacity: 0.9;">{currentPage}</span>
-				</div>
-			{/if}
+
         </div>
 			{/if}
 		</div>
@@ -796,7 +1079,7 @@ function applyAppearanceToRendition() {
 		{/if}
 	</div>
 
-	{#if distractionFree}
+    {#if distractionFree}
         <div class={`pointer-events-none fixed inset-0 z-50 transition-opacity duration-200 ${showHud ? 'opacity-100' : 'opacity-0'}`}>
             <div class="pointer-events-auto absolute right-6 bottom-6 flex items-center gap-3">
                 <FontSizeControl />
@@ -805,11 +1088,11 @@ function applyAppearanceToRendition() {
                     onPrev={() => { void rendition?.prev(); }}
                     onNext={() => { void rendition?.next(); }}
                     {isPrevDisabled}
-					{isNextDisabled}
-					{isNavigating}
-				/>
-			</div>
-			<div class="pointer-events-auto absolute left-6 top-6">
+                    {isNextDisabled}
+                    {isNavigating}
+                />
+            </div>
+            <div class="pointer-events-auto absolute left-6 top-6">
                 <button
                     type="button"
                     class="reader-button rounded-full border px-3 py-2 text-xs backdrop-blur transition"
@@ -818,11 +1101,16 @@ function applyAppearanceToRendition() {
                 >
                     Exit Focus
                 </button>
-			</div>
-		</div>
-	{:else}
-		<p class="reader-muted text-center text-xs">
-			Typography polish and progress tracking arrive in the next phase.
-		</p>
+            </div>
+            {#if globalPagesReady && currentPage !== null}
+                <div class="pointer-events-none fixed left-1/2 z-50 -translate-x-1/2 transform" style="bottom:48px;color:var(--reader-panel-text);opacity:0.9;">
+                    <span class="text-xs font-semibold">{currentPage}</span>
+                </div>
+            {/if}
+        </div>
+    {:else}
+        <p class="reader-muted text-center text-xs">
+            Typography polish and progress tracking arrive in the next phase.
+        </p>
 	{/if}
 </div>

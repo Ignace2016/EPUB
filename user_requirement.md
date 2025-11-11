@@ -28,6 +28,8 @@ This document captures the evolving requirements and preferences expressed durin
 - Deep links supported (`?href=`). Maintain smooth transitions.
 - Prev/Next buttons must be high‑contrast and theme‑aware.
 - Launch Reader and Download EPUB buttons must be theme‑aware, attractive, and consistent.
+- Hide the on‑screen page number overlay (page / total) for now; underlying pagination can remain for future use.
+ - In Focus mode, show only the current global page number (center bottom). Keep it hidden until global pagination is ready so it remains consistent.
 
 ## Appearance & Theming
 - Global appearance modes (Day, Night, Sepia) with instant switching.
