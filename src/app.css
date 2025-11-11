@@ -61,6 +61,33 @@ body {
 	box-shadow: 0 15px 45px -35px rgba(0, 0, 0, 0.5);
 }
 
+.logo-mark {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.logo-icon {
+	font-size: 1.75rem;
+	color: var(--reader-panel-link, #2fd4a7);
+	filter: drop-shadow(0 6px 12px color-mix(in srgb, var(--reader-panel-link, #2fd4a7) 30%, transparent));
+}
+
+.logo-label {
+	font-size: 1.1rem;
+	font-weight: 600;
+	letter-spacing: 0.4em;
+	text-transform: uppercase;
+	color: var(--app-text, #f8fafc);
+}
+
+.logo-tag {
+	font-size: 0.8rem;
+	letter-spacing: 0.3em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, var(--app-text, #f8fafc) 60%, transparent);
+}
+
 .app-body {
 	max-width: 1200px;
 	margin: 0 auto;

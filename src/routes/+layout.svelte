@@ -58,8 +58,12 @@
 
 <div class="theme-shell antialiased" style={themeVars} data-theme={appearanceModeId}>
 	<header class="global-header">
-		<div>
-			<p class="text-xs uppercase tracking-[0.4em] opacity-70">Astra</p>
+		<div class="logo-mark">
+			<span class="logo-icon">✷</span>
+			<div>
+				<p class="logo-label">Astra</p>
+				<p class="logo-tag">Stories in orbit</p>
+			</div>
 		</div>
 		<div class="w-full max-w-xl">
 			<AppearanceModeSelector />
