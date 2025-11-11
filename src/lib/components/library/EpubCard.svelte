@@ -1,4 +1,5 @@
 <script lang="ts">
+import { goto } from '$app/navigation';
 import type { LibraryFile } from '$lib/utils/epub-scanner';
 
 	let { file } = $props<{ file: LibraryFile }>();
@@ -82,12 +83,13 @@ import type { LibraryFile } from '$lib/utils/epub-scanner';
 	</div>
 
 	<div class="mt-auto flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-		<a
+		<button
 			class="primary-cta inline-flex items-center justify-center"
-			href={`/reader?book=${meta.slug}`}
+			type="button"
+			onclick={() => (window.location.href = `/reader?book=${meta.slug}`)}
 		>
 			Launch Reader
-		</a>
+		</button>
 		<a
 			class="secondary-cta inline-flex items-center justify-center"
 			href={meta.fileUrl}

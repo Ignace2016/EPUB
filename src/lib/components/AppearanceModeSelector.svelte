@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { afterNavigate } from '$app/navigation';
 	import { appearanceModeStore, appearanceModes, type AppearanceModeId } from '$lib/stores/reader';
 
 	let selectedMode = $state<AppearanceModeId>(appearanceModes[0].id);
@@ -26,6 +27,12 @@
 
 		window.addEventListener('click', handleClick);
 		return () => window.removeEventListener('click', handleClick);
+	});
+
+	$effect(() => {
+		afterNavigate(() => {
+			isOpen = false;
+		});
 	});
 
 	function selectMode(modeId: AppearanceModeId) {

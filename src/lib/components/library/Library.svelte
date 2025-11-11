@@ -13,9 +13,9 @@ let expandedPaths = $state(bootstrapExpansion(root));
 
 const initialSelectedPath = get(activeFolderPath) ?? root.path;
 
-let selectedPath = $state(root.path);
+let selectedPath = $state(initialSelectedPath);
 
-expandForPath(root.path);
+expandForPath(initialSelectedPath);
 
 $effect(() => {
 	activeFolderPath.set(selectedPath);

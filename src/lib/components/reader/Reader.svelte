@@ -71,6 +71,7 @@ const bookUrl = $derived(encodeURI(book.metadata.fileUrl));
 			rendition = bookInstance.renderTo(viewerEl, {
 				width: '100%',
 				height: '100%',
+				flow: 'paginated',
 				allowScriptedContent: true
 			});
 
