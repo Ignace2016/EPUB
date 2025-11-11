@@ -42,11 +42,23 @@ function countEpubs(folder: LibraryFolder): number {
 	<div
 		class={`folder-node ${isSelected ? 'folder-node--active' : ''}`}
 		style={`padding-left: ${depth * 0.5}rem`}
+		role="button"
+		tabindex="0"
+		onclick={onSelect}
+		onkeydown={(event) => {
+			if (event.key === 'Enter' || event.key === ' ') {
+				event.preventDefault();
+				onSelect();
+			}
+		}}
 	>
 		<button
 			type="button"
 			class="folder-toggle rounded-lg border border-transparent p-1"
-			onclick={onToggle}
+			onclick={(event) => {
+				event.stopPropagation();
+				onToggle(event);
+			}}
 			aria-label={isOpen ? 'Collapse folder' : 'Expand folder'}
 		>
 			<svg
@@ -60,12 +72,10 @@ function countEpubs(folder: LibraryFolder): number {
 			</svg>
 		</button>
 
-		<button
-			type="button"
+		<div
 			class={`flex flex-1 items-center justify-between text-left text-sm font-medium ${
 				isSelected ? 'text-strong' : 'text-muted'
 			}`}
-			onclick={onSelect}
 		>
 			<span class="flex items-center gap-2">
 				<span class="folder-icon inline-flex h-6 w-6 items-center justify-center rounded-lg text-xs">
@@ -76,7 +86,7 @@ function countEpubs(folder: LibraryFolder): number {
 			<span class="folder-count rounded-full px-2 py-0.5 text-xs">
 				{epubCount}
 			</span>
-		</button>
+		</div>
 	</div>
 
 	{#if isOpen && folderChildren.length}
