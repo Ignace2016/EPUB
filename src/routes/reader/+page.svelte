@@ -1,0 +1,29 @@
+<script lang="ts">
+	import Reader from '$lib/components/reader/Reader.svelte';
+	import type { PageData } from './$types';
+
+	let { data } = $props<{ data: PageData }>();
+</script>
+
+<section class="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">
+	<header class="flex flex-col gap-3">
+		<a
+			class="inline-flex w-fit items-center gap-2 text-sm font-semibold text-accent-emerald transition hover:text-strong"
+			href="/"
+		>
+			<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+			Back to Library
+		</a>
+		<div>
+			<p class="text-xs uppercase tracking-[0.35em] text-muted">Phase 2 · Reader</p>
+			<h1 class="text-3xl font-semibold text-strong">Basic EPUB Reader</h1>
+			<p class="text-sm text-muted">
+				Powered by epub.js with seamless in-place rendering—no page reloads, instant chapter display.
+			</p>
+		</div>
+	</header>
+
+	<Reader book={data.book} initialHref={data.initialHref} />
+</section>
