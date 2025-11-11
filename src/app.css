@@ -119,6 +119,14 @@ body {
 	color: var(--reader-panel-text, #edf1f7);
 }
 
+body:fullscreen,
+body:-webkit-full-screen,
+body:-moz-full-screen,
+body:-ms-fullscreen {
+	background: var(--reader-panel-bg, #050607);
+	color: var(--reader-panel-text, #edf1f7);
+}
+
 .reader-panel a {
 	color: var(--reader-panel-link, #2fd4a7);
 }
